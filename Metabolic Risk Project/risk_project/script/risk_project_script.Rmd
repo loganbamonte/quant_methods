@@ -1,0 +1,404 @@
+---
+title: "Metabolic Risk Drivers in the United States: The Role of Healthcare Access and Geography "
+output: html_document
+---
+
+Setup and data loading
+```{r}
+library(CDCPLACES)
+library(vegan)
+library(tidyverse)
+
+# us_metabolic_data <- get_places(
+#   geography = "census", 
+#   release = "2020",
+#   measure = c("OBESITY", "DIABETES", "BPHIGH", "HIGHCHOL", "ACCESS2", "CHECKUP")
+# )
+
+# write.csv(us_metabolic_data, file = '../data/us_metabolic_data.csv', row.names = FALSE)
+# save(us_metabolic_data, file = '../risk.project/data/us_metabolic_data.Rdata')
+
+# load('../risk_project/data/us_metabolic_data.Rdata') #if in my class file
+load('../data/us_metabolic_data.Rdata') #if downloaded risk_project zip
+
+dim(us_metabolic_data)
+names(us_metabolic_data) #lists column names so I can make sure I use the correct ones in the select function below
+
+df_wide <- us_metabolic_data %>% #formats data set to only include variables and info I need
+    select(locationname, stateabbr, measureid, data_value, geolocation, countyfips) %>%
+    pivot_wider(names_from = measureid, values_from = data_value) %>%
+    drop_na()
+
+y_vars <- c("OBESITY", "DIABETES", "BPHIGH", "HIGHCHOL")
+```
+
+Geolocation tidying
+Latitude and longitude were nested within a column in the CDC PLACES data, so this step creates their own columns. 
+```{r}
+?mutate
+?separate
+df_cleancord <- df_wide %>% #further clean data, specifically geolocation column for later mapping
+  mutate(geolocation = as.character(geolocation)) %>% #makes geolocation column into character string 
+  mutate(geolocation = str_replace_all(geolocation, "[^0-9.\\s-]", "")) %>% #deletes everything in string except numbers 0-9, decimals, spaces, and negative signs to leave only the coordinates
+  mutate(geolocation = str_trim(geolocation)) %>% #removes extra spaces
+  separate(geolocation, into = c("lon", "lat"), sep = "\\s+", convert = TRUE) %>% #creates new column labeled lon, lat; sep splits the text where there is a space; convert changes the new column from text to numbers
+  drop_na(lon,lat) # Ensure no missing coordinates and drops rows where this conversion didn't work
+```
+
+Multivariate Modeling and associated figure exports below
+PCA to show metabolic variables. Plot used for visualizing and working through thought process, not saved as figures for the project.  
+```{r}
+pca_metabolic <- rda(df_cleancord[, y_vars], scale = TRUE) #use rda function for running pca in vegan b/c it is just an unconstrained rda
+summary(pca_metabolic) #shows PC1, PC2, PC3, PC4
+scores(pca_metabolic, display = "species", choices = 1) #shows impact of each disease (see which is strongest)
+
+biplot(pca_metabolic, scaling = 3, type = c("text", "points"), col = c("blue", "red")) #visualizes relationships
+
+```
+Metabolic Cluster Correlation Matrix
+Strong Pearson correlation coefficients between the four conditions justify the creation of a unified index.
+```{r}
+ID_vars <- df_cleancord[, y_vars] #subset indicator variables 
+panel.cor <- function(x, y, ...) { #correlation panel for use in figure 1
+    r <- round(cor(x, y, use = "complete.obs"), 2)
+    plot.window (xlim = c(0, 1), ylim = c(0, 1))
+    text(0.5, 0.5, paste0("r = ", r), cex = 1.5)
+}
+
+pairs(ID_vars, #use as an overview for justification of the question
+      lower.panel = panel.cor, #display pearson correlation coefficients (r)
+      upper.panel = panel.smooth, #add red trend lines
+      main = "Metabolic Cluster Correlation Matrix",
+      col = "blue", 
+      pch = ".") #makes data points smaller so better visual
+
+# to save figure to figs project folder, uncomment if running for the first time
+# png('../figs/metabolic_risk_fig1.png', width = 8, height = 8, units = 'in', res = 300)
+# pairs(ID_vars,
+#       lower.panel = panel.cor,
+#       upper.panel = panel.smooth,
+#       main = "Metabolic Cluster Correlation Matrix",
+#       col = "blue",
+#       pch = ".")
+# dev.off()                    # to stop writing to the png file.
+```
+
+Redundancy Analysis for Clinical Access vs. Metabolic Health
+Annual checkups are more strongly associated with hypertension and cholesterol. Insurance is more strongly associated with obesity and diabetes.
+```{r}
+df_cleancord$insured_perc <- 100 - df_cleancord$ACCESS2 #flips access variable to represent % insured rather than uninsured (easier to understand)
+df_cleancord$annual_checkup_perc <- df_cleancord$CHECKUP #label that describes variable better and lines up with above
+
+rda_metabolic <- rda(ID_vars ~ insured_perc + annual_checkup_perc, data = df_cleancord, scale = TRUE)
+summary(rda_metabolic) #shows RDA1, RDA 2, PC1, PC2, PC3, PC4
+scores(rda_metabolic, display = "sites", choices = 1) #shows individual "site" risk scores that take into account access variables against metabolic factors, not sure if this is really addressing my question
+
+RsquareAdj(rda_metabolic) #shows how much of the data is explained by the metabolic variables, r2=0.423 --> 42.3%, meaning 57.7% residual variance --> use as justification for adding in geography as potential explanatory variable
+
+# use to check if the overall RDA is statistically significant
+clinicalfactors_sig <- anova(rda_metabolic) #results are significant
+print(clinicalfactors_sig) #clean summary table
+
+# use to check which specific predictor (insured_perc vs annual_checkup_perc) is more important
+clinicalpredictor_sig <- anova(rda_metabolic, by = "term") #Results are significant. annual_checkup_perc frequency is a stronger predictor of metabolic clusters than insured_perc (see variance).
+print(clinicalpredictor_sig) #clean summary table
+
+# create RDA plot
+# The arrows show which diseases are most influenced by which access factors
+plot(rda_metabolic, display = c("sp", "bp"), type = "text", 
+     main = "Clinical Access vs. Metabolic Health")
+
+# annual_checkup_perc is stronger predictor for HIGHCHOL and BPHIGH, insured_perc is stronger for OBESITY and DIABETES
+  # PROBLEM: annual_checkup_perc = annual visits to the doctor which I intended to be a good predictor, but the arrow for it points to the right meaning higher rates of annual visits = higher reported disease. This is NOT expected. Likely points to the fact that high cholesterol and hypertension require more maintenance = more visits to the doctor. 
+
+# to save figure to figs project folder, uncomment if running for first time
+# png('../figs/metabolic_risk_fig2.png', width = 900, height = 800, res = 120)
+# par(mar = c(8, 5, 12, 1)) #set margins to fit
+# plot(rda_metabolic,
+#      display = c("sp", "bp"),
+#      arrow.mul = 0.4,
+#      main = "Clinical Access vs. Metabolic Health",
+#      col = "blue",
+#      cex = 0.8)
+# dev.off()
+```
+
+Looking at access variables in isolation
+Plots used for visualizing and working through thought process, not saved as figures for the project. 
+```{r}
+#seeing just the effect of checkups
+rda_pure_checkups <- rda(ID_vars ~ annual_checkup_perc + Condition(insured_perc), data = df_cleancord, scale = TRUE)
+plot(rda_pure_checkups, display = c("sp", "bp"),
+     main = "Effect of Checkups (Controlling for Insurance)")
+
+#seeing just the effect of insurance
+rda_pure_insurance <- rda(ID_vars ~ insured_perc + Condition(annual_checkup_perc),
+data = df_cleancord, scale = TRUE)
+plot(rda_pure_insurance, display = c("sp", "bp"),
+main = "Effect of Insurance (Controlling for Checkups)")
+
+rda_spatial <- rda(ID_vars ~ insured_perc + annual_checkup_perc + lat + lon,
+data = df_cleancord, scale = TRUE)
+summary(rda_spatial)
+RsquareAdj(rda_spatial) # See how much the R2 increases from 42.3% 
+
+# Annual checkups have positive correlation with all metabolic risk variables, strongest with high blood pressure and high cholesterol. 
+
+# Insurance has negative correlation with all metabolic risk variables, strongest with obesity and diabetes. Points to idea that insurance can be an indicator of income, socioeconomic stability, access to preventative care. Those that are insured are usually employed, those without insurance are usually unemployed or low-income/no benefits job. Treatments for diabetes (insulin) and obesity (GLP-1 agonist, diet changes, procedures) are more expensive than treatment of hypertension and high cholesterol. Healthcare system is REACTIVE vs PROACTIVE. 
+
+```
+Variation Partitioning of Metabolic Risk
+Geography independently influences 7.3% of metabolic risk. Half of the variance remains unexplained by these variables. 
+```{r}
+# Variation partitioning between insurance, checkup and geo sets
+parts <- varpart(ID_vars, 
+                 ~ insured_perc,
+                 ~ annual_checkup_perc, 
+                 ~ lat + lon, 
+                 data = df_cleancord, scale = TRUE)
+plot(parts, Xnames = c("Insurance", "Annual Checkup", "Geography"), bg = c("blue", "red", "green"))
+     title(main = "Variation Partitioning of Metabolic Risk", 
+           line = 1, 
+           cex.main = 1.2)
+
+# to save figure to figs project folder, uncomment if running for first time
+# png('../figs/metabolic_risk_fig3.png', width = 8, height = 8, units = 'in', res = 300)
+# par(mar = c(10, 4, 4, 4))
+# plot(parts, Xnames = c("Insurance", "Annual\n Checkup", "Geography  "), bg = c("blue", "red", "green")) # \n used in label to put checkup on new line under annual (helps formatting)
+#      title(main = "Variation Partitioning of Metabolic Risk",
+#            line = 1,
+#            cex.main = 1.2)
+# dev.off()
+```
+
+Mapping the Metabolic Risk Index 
+```{r}
+# I referenced https://ggplot2-book.org/ for help with ggplot2 outside of BIOL470 materials
+library(ggplot2)
+library(viridis)
+library(tidyr)
+library(leaflet)
+
+scores(pca_metabolic, display = "species", choices = 1) #use to check PC1 scores, shows they are negative
+metabolic_risk_scores <- scores(pca_metabolic, display = "sites", choices = 1) # Take PC1 scores from pca_metabolic
+df_cleancord$metabolic_index <- metabolic_risk_scores * -1 #this flips the values so mean higher value = higher risk/less healthy, rather than higher value = less risk/more healthy
+
+```
+National Heatmap of Combined Metabolic Risk 
+```{r}
+# Map metabolic risk index I just created
+nationalrisk <- ggplot(df_cleancord, aes(x = lon, y = lat, z = metabolic_index)) +
+  stat_summary_hex(bins = 100, fun = mean) + # adjust bins # to increase/decrease # hexes across map, this function divides map into hexes and average obesity calculated for each hex, rather than a ton of individual dots for each census tract that can be hard to visualize. This is advantageous for large scale map (US), would probably not do this for smaller scale like individual state or county. 100 used here to show clear clustering in SE compared to the rest of the US. Overcomes challenge of more dispersed census tracts in midwest.  
+  scale_fill_viridis_c(option = "magma", name = "Risk Index") +
+  coord_quickmap(xlim = c(-125, -67), ylim = c(24, 50)) + # limits view to contiguous US states
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    panel.grid = element_blank(), # This is the big one—it removes the "graph paper" look
+    axis.title = element_blank(), 
+    axis.text = element_blank(),  
+    axis.ticks = element_blank()
+  ) +
+  labs(title = "National Heatmap of Combined Metabolic Risk",
+       subtitle = "Index of Obesity, Diabetes, High BP, and High Cholesterol",
+       x = "Longitude", y = "Latitude")
+
+# to save figure to figs project folder; uncomment if running for first time
+# png('../figs/metabolic_risk_fig4.png', width = 900, height = 800, res = 120)
+# plot(nationalrisk)         
+# dev.off()
+```
+
+Making a function to easily map variables:
+```{r}
+# make a function to easily map variables. This could be helpful for mapping the other variables available in us_metabolic_data. For other variables to be mapped, they must be added to df_cleancord OR create a new df for the question. 
+
+make_map <- function(data, var_name, title_name, subtitle_name = NULL) {
+  ggplot(data, aes(x = lon, y = lat, z = .data[[var_name]])) +
+    stat_summary_hex(bins = 100, fun = mean) +
+    scale_fill_viridis_c(option = "magma", name = "%") +
+    coord_quickmap(xlim = c(-125, -67), ylim = c(24, 50), expand = FALSE) +
+    theme_minimal() +
+    labs(title = title_name,
+         subtitle = subtitle_name) +
+    theme(
+    legend.position = "right",
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    strip.text = element_text(face = "bold", size = 12), # make titles pop
+    panel.grid = element_blank(), # remove lines for a cleaner "map" look
+    axis.title = element_blank(), # remove axis for visual clarity. The US map is easily recognizable, geographic units not necessary
+    axis.text = element_blank(), 
+    axis.ticks = element_blank()
+  )
+}
+
+```
+
+Mapping individual indicators on their own scale for a quick visual of individual patterns
+Magma will adjust to max and min prevalence for each graph, so these are meant to show individual trends and not compared side by side to other variables. 
+```{r}
+# create maps
+p_diabetes <- make_map(df_cleancord, "DIABETES", "National Diabetes Prevalence", "Aggregated by Census Tract Coordinates")
+p_diabetes #view diabetes map
+p_obesity <- make_map(df_cleancord, "OBESITY", "National Obesity Prevalence", "Aggregated by Census Tract Coordinates")
+p_obesity #view obesity map
+p_highbp <- make_map(df_cleancord, "BPHIGH", "National High Blood Pressure Prevalence", "Aggregated by Census Tract Coordinates")
+p_highbp #view high blood pressure map
+p_highchol <- make_map(df_cleancord, "HIGHCHOL", "National High Cholesterol Prevalence","Aggregated by Census Tract Coordinates")
+p_highchol #view high cholesterol map
+```
+
+
+We can stack 4 graphs showing each indicator on one set scale to show individual patterns but in a way that they can clearly be compared side by side. 
+* Notice diabetes looks different because overall prevalence of diabetes is lower than other conditions. 
+
+```{r}
+# need to facet conditions to be able to stack graphs 
+df_long <- df_cleancord %>%
+  pivot_longer(cols = c(OBESITY, DIABETES, BPHIGH, HIGHCHOL), 
+               names_to = "condition", values_to = "condition_prev") %>%
+  mutate(condition = recode(condition,
+    "DIABETES" = "Diabetes",
+    "OBESITY"  = "Obesity",
+    "BPHIGH"   = "High Blood Pressure",
+    "HIGHCHOL" = "High Cholesterol"
+  ))
+
+fourfactor_national <- ggplot(df_long, aes(x = lon, y = lat, z = condition_prev)) +
+  stat_summary_hex(bins = 100, fun = mean) +
+  facet_wrap(~condition, ncol = 2) + # stack them 2x2
+  scale_fill_viridis_c(option = "magma", name = "%") +
+  coord_quickmap(xlim = c(-125, -67), ylim = c(24, 50)) + 
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    strip.text = element_text(face = "bold", size = 12),
+    panel.grid = element_blank(), # remove lines for a cleaner "map" look
+    axis.title = element_blank(), 
+    axis.text = element_blank(), 
+    axis.ticks = element_blank()
+  ) +
+  labs(title = "Geographic Distribution of Metabolic Indicators",
+       subtitle = "Comparing prevalence across the Continental US")
+# to save figure to figs project folder; uncomment if running for first time
+# png('../figs/metabolic_risk_fig5.png', width = 900, height = 800, res = 120) #save stacked figure
+# plot(fourfactor_national)         
+# dev.off()
+
+```
+
+Creating an interactive map of the Southeast using leaflet
+First, we map at the census tract level
+```{r}
+library(leaflet)
+library(sf)
+library(tigris)
+options(tigris_use_cache = TRUE)
+library(tidyverse)
+
+# group southeastern states into one value
+se_states <- c('AL', 'AR', 'FL', 'GA', 'KY', 'LA', 'MS', 'NC', 'SC', 'TN', 'VA', 'WV')
+
+# use to bind se states into one sf object
+sf_se_shapes <- se_states %>%
+  map_dfr(~ tracts(state = .x, cb = TRUE, year = 2020))
+
+# plot(st_geometry(sf_se_map)) # can use this to verify states were correctly bound
+
+# leaflet showing se data by census tract
+df_se_map <- sf_se_shapes %>% # join health data and state shapes
+  mutate(GEOID = as.character(GEOID)) %>%
+  inner_join(df_cleancord, by = c("GEOID" = "locationname"))%>%
+  st_as_sf() %>%
+  st_transform(4326) %>%
+  filter(!is.na(metabolic_index)) # remove areas with no data
+
+
+pal_census <- colorNumeric(palette = "magma", domain = df_se_map$metabolic_index) #create color palette against census tract metabolic index data for se states
+
+state_lines <- states(cb = TRUE, year = 2020) %>% #pulls shapefiles from US census via tigris package
+  filter(STUSPS %in% se_states) %>% #filters data to only se states
+  st_transform(4326) #necessary due to format difference between US Census Bureau and leaflet
+
+leaflet(df_se_map) %>%
+  addProviderTiles(providers$CartoDB.DarkMatter) %>% #CartoDB.DarkMatter used to provide high contrast between background and census tracts, which makes it easier to see the geospatial patterns. Could also use CartoDB.Positron for a light background if preferred, or just use default in package using addTiles(). 
+  addPolygons(
+    fillColor = ~pal_census(metabolic_index),
+    stroke= FALSE,
+    fillOpacity = 1,
+    highlightOptions = highlightOptions(
+      weight = 1,
+      color = "#666",
+      fillOpacity = 1,
+      bringToFront = TRUE),
+    label = ~paste0("Risk: ", round(metabolic_index, 2))
+  ) %>%
+  addPolylines(
+    data = state_lines,
+    color = "black",
+    weight = 1.5,
+    opacity = 1
+  ) %>%
+  addLegend (
+    pal = pal_census,
+    values = ~metabolic_index,
+    title = "<div style='text-align: center;'>
+               Metabolic Risk<br>
+               <small>Census tract level</small></div>" # <small>... </small makes the text smaller to act as subtitle for the legend since there is not a subtitle function built into leaflet
+  ) %>%
+  addControl(
+    html = "<div style='color: black; background: white; padding: 5px; text-align: center'>
+      <b>Purple = Low Risk</b><br>
+      <b>Yellow = High Risk</b></div>", #<b>...</b> bolds text 
+                                        #<br> creates a new line
+      position = "bottomright"
+  )
+
+```
+
+Here we create an interactive map at the county level, instead of census tract:
+```{r}
+# leaflet showing se by county instead of census tract, cleaner visual
+# This represents the mean of available census tracts within that boundary. Risk losing the variation between census tracts within a county. However, averaging them is useful for a regional study of the Southeast because county is the primary level where policy happens (health departments, school districts, etc.), not census tracts. This makes the data more relevant and digestible for policy makers. 
+
+
+se_counties <- counties(state = se_states, cb = TRUE, year = 2020) %>% # download county shapes
+  st_transform(4326)
+
+df_county_map <- se_counties %>% # use to join health data to counties
+  inner_join(df_cleancord, by = c("GEOID" = "countyfips")) # use countyfips to join
+
+pal_county <- colorNumeric(palette = "magma", domain = df_county_map$metabolic_index) #create new color palette against county metabolic index data for se states
+
+# map
+leaflet(df_county_map) %>%
+  addProviderTiles(providers$CartoDB.DarkMatter) %>% #again, CartoDB.DarkMatter used to provide high contrast between background and counties, which makes it easier to see the geospatial patterns. Could also use CartoDB.Positron for a light background if preferred, or just use default in package using addTiles(). 
+  addPolygons(
+    fillColor = ~pal_county(metabolic_index),
+    weight = 0.5,           # Thin county lines
+    color = "white",
+    fillOpacity = 1,
+    label = ~paste0(NAME, " County: ", round(metabolic_index, 2))
+  ) %>%
+  addPolylines(data = state_lines, color = "black", weight = 2) %>%
+  addLegend (
+    pal = pal_county,
+    values = ~metabolic_index,
+    title = "<div style='text-align: center;'>
+               Metabolic Risk<br>
+               <small>County level</small></div>" # <small>... </small makes the text smaller to act as subtitle for the legend since there is not a subtitle function built into leaflet
+  ) %>%
+  addControl(
+    html = "<div style='color: black; background: white; padding: 5px; text-align: center'>
+      <b>Purple = Low Risk</b><br>
+      <b>Yellow = High Risk</b></div>", #<b>...</b> bolds text 
+                                        #<br> creates a new line
+      position = "bottomright"
+  )
+
+```
