@@ -18,7 +18,7 @@ explain the geographic distribution of metabolic clusters?
 * How much variance in this risk is explained by insurance coverage vs. routine checkups?
 * How much unique variance in metabolic risk is explained by geography (Latitude/Longitude) versus clinical access?
 
-
+<pre>
 The structure of the code-base
 
 risk.project/
@@ -33,6 +33,7 @@ risk.project/
   script/
     risk_project_script.Rmd.      : File for code and analysis
   README.md                       : Project documentation
+</pre>
 
 * Software: RStudio
 * Libraries:
