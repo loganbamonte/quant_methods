@@ -1,5 +1,8 @@
+
 ---
-title: "Metabolic Risk Drivers in the United States: The Role of Healthcare Access and Geography "
+title: "risk_project_script "
+author: Logan Bamonte
+date: "April 29, 2026"
 output: html_document
 ---
 

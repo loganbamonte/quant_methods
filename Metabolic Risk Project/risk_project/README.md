@@ -33,6 +33,7 @@ risk.project/
   script/
     risk_project_script.Rmd.      : File for code and analysis
   README.md                       : Project documentation
+
 </pre>
 
 * Software: RStudio
@@ -51,6 +52,7 @@ Structure of the Data & Metadata
 Input: data/us_metabolic_data.Rdata
 
 <pre>
+
 OBESITY: % of adults with BMI greater than or equal to 30 (numeric).
 DIABETES: % of adults diagnosed with diabetes (numeric).
 BPHIGH: % of adults with high blood pressure (numeric).
@@ -60,8 +62,8 @@ insured_perc: % of adults with health insurance (transformed from ACCESS2).
 CHECKUP: % of adults with a routine checkup in the past year (numeric).
 geolocation: Raw coordinate string (e.g., c(type = "Point", coordinates = "-86.49001, 32.477).
 lat / lon: Numeric coordinates (extracted from geolocation)
-</pre>
 
+</pre>
 
 
 Instructions on How to Recreate Results
